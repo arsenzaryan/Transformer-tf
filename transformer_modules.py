@@ -68,6 +68,7 @@ class AttentionHead():
         return attn_head_output
 
 
+
 class MultiHeadAttnetion():
     level = TensorLoggingLevels.multihead_attention_block
 
@@ -90,20 +91,20 @@ class MultiHeadAttnetion():
     def __call__(self, queries, keys, values, mask = None):
         if mask is not None:
             mask = None #to be implemented
-        n_seq = queries.get_shape().as_list()[1]
+        n_batch = queries.get_shape().as_list()[0]
 
-        Q = self.transform_vec(queries, self.q_transform, n_seq)
-        K = self.transform_vec(keys, self.k_transform, n_seq)
-        V = self.transform_vec(values, self.v_transform, n_seq)
+        Q = self.transform_vec(queries, self.q_transform, n_batch)
+        K = self.transform_vec(keys, self.k_transform, n_batch)
+        V = self.transform_vec(values, self.v_transform, n_batch)
 
         attn_head_output, self.attn_weights = self.attn(Q, K, V, mask=mask)
-        attn_head_output = tf.reshape(attn_head_output, shape=(-1, n_seq, self.n_heads*self.d_k))
+        attn_head_output = tf.reshape(attn_head_output, shape=(n_batch, -1, self.n_heads*self.d_k))
         log_size(self.level, attn_head_output, 'Multihead Attention, output')
         return attn_head_output
 
 
-    def transform_vec(self, vec, dense_transform, n_seq):
-        linear_proj =  tf.reshape(dense_transform(vec), shape=[-1, n_seq, self.n_heads, self.d_k])
+    def transform_vec(self, vec, dense_transform, n_batch):
+        linear_proj =  tf.reshape(dense_transform(vec), shape=[n_batch, -1, self.n_heads, self.d_k])
         return tf.transpose(linear_proj, perm=[0,2,1,3]) #bringing to shape (batch x heads x seq x feat)
 
 
@@ -137,8 +138,8 @@ class EncoderBlock():
 
         enc_state = enc_input + tf.nn.dropout(tf.contrib.layers.layer_norm(attn), keep_prob=1-self.dropout)
 
-        enc_state = self.pos_wise_ff(enc_state)
-        enc_state = enc_input + tf.nn.dropout(tf.contrib.layers.layer_norm(enc_state), keep_prob=1-self.dropout)
+        pos = self.pos_wise_ff(enc_state)
+        enc_state = enc_state + tf.nn.dropout(tf.contrib.layers.layer_norm(pos), keep_prob=1-self.dropout)
         log_size(self.level, enc_state, 'Encoder, output')
 
         return enc_state
@@ -196,6 +197,43 @@ class TransformerDecoder():
         for decoder in self.decoders:
             x = decoder(x, enc_out, src_mask=src_mask, tgt_mask=tgt_mask)
         return x
+
+
+class Generator():
+    def __init__(self, d_output_vocab):
+        self.proj = Dense(d_output_vocab, kernel_initializer=initializers.he_normal(), name='generator')
+
+    def __call__(self, x):
+        return tf.nn.softmax(self.proj(x), axis = -1)
+
+
+
+class PositionalEmbedding():
+    def __init__(self, max_len, d_model):
+        self.pe = np.zeros([max_len, d_model]).astype(np.float32)
+        position = np.arange(0, max_len)[:, None]
+        div_term = np.power(10000, np.arange(0, d_model, 2) / d_model)
+
+        self.pe[:, 0::2] = np.sin(position * div_term)
+        self.pe[:, 1::2] = np.cos(position * div_term)
+
+        self.pe = tf.constant(self.pe[None, :, :], dtype = tf.float32, name = 'Positional_embs') #adding batch dimension
+
+    def __call__(self, seq_len):
+        return tf.gather(self.pe, np.arange(seq_len), axis=1)
+
+
+
+
+class WordEmbeddings():
+    def __init__(self, d_model, d_vocab, max_len = 30):
+        self.embeddings = tf.Variable(initial_value=np.random.randn(d_vocab, d_model), dtype=tf.float32)
+        self.pos_embeddings = PositionalEmbedding(max_len, d_model)
+
+    def __call__(self, indices):
+        seq_len = indices.shape[1] if len(indices.shape)>1 else len(indices)
+        return tf.nn.embedding_lookup(self.embeddings, indices) + self.pos_embeddings(seq_len)
+
 
 
 
