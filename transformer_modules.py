@@ -89,8 +89,8 @@ class MultiHeadAttnetion():
 
 
     def __call__(self, queries, keys, values, mask = None):
-        if mask is not None:
-            mask = None #to be implemented
+        # if mask is not None:
+        #     mask = tf.expand_dims(mask, axis=0) #ading batch dimension, not strictly necessary since broadcasting handles it internally
         n_batch = queries.get_shape().as_list()[0]
 
         Q = self.transform_vec(queries, self.q_transform, n_batch)
@@ -137,9 +137,11 @@ class EncoderBlock():
         log_size(self.level, attn, 'Encoder, attention output')
 
         enc_state = enc_input + tf.nn.dropout(tf.contrib.layers.layer_norm(attn), keep_prob=1-self.dropout)
+        #enc_state = attn
 
         pos = self.pos_wise_ff(enc_state)
         enc_state = enc_state + tf.nn.dropout(tf.contrib.layers.layer_norm(pos), keep_prob=1-self.dropout)
+        #enc_state=pos
         log_size(self.level, enc_state, 'Encoder, output')
 
         return enc_state
@@ -174,14 +176,17 @@ class DecoderBlock():
         #apply decoder self attention
         att = self.masked_attn(x, x, x, mask=tgt_mask)
         x = x + tf.nn.dropout(tf.contrib.layers.layer_norm(att), keep_prob=1 - self.dropout)
+        #x = att
 
         #apply encoder-decoder attention
-        att = self.attn(queries=x, keys=enc_out, values=enc_out)
+        att = self.attn(queries=x, keys=enc_out, values=enc_out, mask = src_mask)
         x = x + tf.nn.dropout(tf.contrib.layers.layer_norm(att), keep_prob=1 - self.dropout)
+        #x=att
 
         #position wise feed forward
         pos = self.pos_wise_ff(x)
         x = x + tf.nn.dropout(tf.contrib.layers.layer_norm(pos), keep_prob=1 - self.dropout)
+        #x = pos
         return x
 
 
@@ -204,7 +209,7 @@ class Generator():
         self.proj = Dense(d_output_vocab, kernel_initializer=initializers.he_normal(), name='generator')
 
     def __call__(self, x):
-        return tf.nn.softmax(self.proj(x), axis = -1)
+        return self.proj(x)
 
 
 
@@ -226,13 +231,35 @@ class PositionalEmbedding():
 
 
 class WordEmbeddings():
-    def __init__(self, d_model, d_vocab, max_len = 30):
-        self.embeddings = tf.Variable(initial_value=np.random.randn(d_vocab, d_model), dtype=tf.float32)
+    def __init__(self, d_model, d_vocab, max_len = 30, name='embs'):
+        #self.embeddings = tf.Variable(initial_value=np.random.randn(d_vocab, d_model), dtype=tf.float32)
+        self.embeddings = tf.get_variable(shape=(d_vocab, d_model), dtype=tf.float32, initializer=initializers.he_normal(), name=name)
         self.pos_embeddings = PositionalEmbedding(max_len, d_model)
 
     def __call__(self, indices):
-        seq_len = indices.shape[1] if len(indices.shape)>1 else len(indices)
+        seq_len = int(indices.shape[1]) if len(indices.shape)>1 else int(indices.shape[1])
         return tf.nn.embedding_lookup(self.embeddings, indices) + self.pos_embeddings(seq_len)
+
+
+
+
+class TransformerModel():
+    def __init__(self, d_inp_vocab, d_out_vocab, d_model=100, n_blocks=3, n_heads=5, d_ff=500, dropout = 0.1):
+        self.enc = TransformerEncoder(n_blocks=n_blocks, d_model=d_model, n_heads=n_heads, d_ff=d_ff, dropout=dropout)
+        self.dec = TransformerDecoder(n_blocks=n_blocks, d_model=d_model, n_heads=n_heads, d_ff=d_ff, dropout=dropout)
+        self.gen = Generator(d_out_vocab)
+
+        # self.inp_embs = WordEmbeddings(d_vocab=d_inp_vocab, d_model=d_model)
+        # self.out_embs = WordEmbeddings(d_vocab=d_out_vocab, d_model=d_model)
+
+    def __call__(self, enc_inp, dec_inp, src_mask=None, tgt_mask=None):
+        self.enc_out = self.enc(enc_inp, mask=src_mask)
+        self.dec_out = self.dec(dec_inp, self.enc_out, src_mask=src_mask, tgt_mask=tgt_mask)
+        self.output = self.gen(self.dec_out)
+        return self.output
+
+
+
 
 
 

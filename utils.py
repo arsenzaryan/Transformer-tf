@@ -44,9 +44,6 @@ def gen_batch(data, batch_size=10):
 
 
 
-
-
-
 # Control how much debugging output we want
 class TensorLoggingLevels(IntEnum):
     attention = 1
