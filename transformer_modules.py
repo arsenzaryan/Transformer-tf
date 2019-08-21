@@ -5,7 +5,7 @@ import logging
 Dense = tf.keras.layers.Dense
 initializers = tf.keras.initializers
 
-from utils import logger, TensorLoggingLevels, Dim, log_size
+from utils import TensorLoggingLevels, log_size
 
 
 class ScaledDotProductAttention():
@@ -14,27 +14,27 @@ class ScaledDotProductAttention():
 
     def __init__(self, dropout = 0.1):
         self.dropout_rate = dropout
-        self.attn_weights = None
+        self.attn_weights = None #for storing the attention weights, for demonstration purposes
 
 
     def __call__(self, q, k, v, mask = None):
-        '''q,k,v are tensors of shape batch x heads x sequence x features'''
+        '''q,k,v are expected to be tensors of shape batch x heads x sequence x features'''
         d_k = k.shape[-1].value
         assert d_k == q.shape[-1].value
 
-        attn = tf.matmul(q, tf.transpose(k, perm=[self.batch_dim, self.heads_dim, self.feat_dim, self.seq_dim]))
+        attn = tf.matmul(q, tf.transpose(k, perm=[self.batch_dim, self.heads_dim, self.feat_dim, self.seq_dim])) #batch x head x seq x seq
         attn = attn / np.sqrt(d_k)
 
         attn = tf.exp(attn)
         log_size(self.level, attn, 'ScaledDotProductAttention, attention weights')
         if mask is not None:
-            attn = tf.multiply(attn, tf.cast(mask, tf.float32))
+            attn = tf.multiply(attn, tf.cast(mask, tf.float32))  #masking by setting the unnormalized softmax probabilities of masked entries to 0
 
         attn = attn / tf.reduce_sum(attn, axis=-1, keepdims=True)
         self.attn_weights = attn
         attn = tf.nn.dropout(attn, keep_prob=1-self.dropout_rate)
 
-        output = tf.matmul(attn, v)
+        output = tf.matmul(attn, v)  #batch x heads x seq x features
         output = tf.transpose(output, perm=[self.batch_dim, self.seq_dim, self.heads_dim, self.feat_dim])
         log_size(self.level, output, 'ScaledDotProductAttention, attention output')
 
@@ -44,8 +44,9 @@ class ScaledDotProductAttention():
 
 
 class AttentionHead():
-    '''A single attention head
-    Just for demonstration purposes, is not used in the further code'''
+    '''A single attention head.
+    Just for demonstration purposes, is not used in the further code, since MultiHeadAttention
+    can be implemented in a more efficient way than just repeating 1 AttentionHead n_heads times'''
     level = TensorLoggingLevels.attention_head
 
     def __init__(self, d_feature, dropout = 0.1, name='attn_head'):
@@ -69,7 +70,7 @@ class AttentionHead():
 
 
 
-class MultiHeadAttnetion():
+class MultiHeadAttention():
     level = TensorLoggingLevels.multihead_attention_block
 
     def __init__(self, d_model, n_heads, dropout = 0.1, name = 'Multihead_attn'):
@@ -80,6 +81,7 @@ class MultiHeadAttnetion():
         self.attn_weights = None
         self.attn = ScaledDotProductAttention(dropout=dropout)
 
+        #d_model x d_model linear transforms, equivalent to n_heads distinct linear transforms of shape d_model x d_k
         self.q_transform = Dense(d_model, kernel_initializer=initializers.he_normal(),
                                  name=name + '_Qtnsfm', dtype=tf.float32)
         self.k_transform = Dense(d_model, kernel_initializer=initializers.he_normal(),
@@ -89,9 +91,7 @@ class MultiHeadAttnetion():
 
 
     def __call__(self, queries, keys, values, mask = None):
-        # if mask is not None:
-        #     mask = tf.expand_dims(mask, axis=0) #ading batch dimension, not strictly necessary since broadcasting handles it internally
-        n_batch = queries.get_shape().as_list()[0]
+        n_batch = queries.get_shape().as_list()[0] #either n_batch or n_seq should be known for further reshapings of the tensors
 
         Q = self.transform_vec(queries, self.q_transform, n_batch)
         K = self.transform_vec(keys, self.k_transform, n_batch)
@@ -104,12 +104,13 @@ class MultiHeadAttnetion():
 
 
     def transform_vec(self, vec, dense_transform, n_batch):
-        linear_proj =  tf.reshape(dense_transform(vec), shape=[n_batch, -1, self.n_heads, self.d_k])
-        return tf.transpose(linear_proj, perm=[0,2,1,3]) #bringing to shape (batch x heads x seq x feat)
+        linear_proj =  tf.reshape(dense_transform(vec), shape=[n_batch, -1, self.n_heads, self.d_k]) #transforming (batch x seq x d_model) to (batch x seq x heads x d_k)
+        return tf.transpose(linear_proj, perm=[0,2,1,3]) #transposing to shape (batch x heads x seq x feat), the shape expected by ScaledDotProductAttention
 
 
 
 class Position_Wise_ff():
+    '''A simple class for Dense -> Relu -> Dense combination'''
     def __init__(self, d_model, d_ff, name='pos_wise_ff'):
         self.dense_feed_forward_1 = Dense(d_ff, activation=tf.nn.relu,
                                           kernel_initializer=initializers.he_normal(), name=name + '_ff1')
@@ -127,21 +128,23 @@ class EncoderBlock():
     def __init__(self, d_model, d_feature, d_ff=2048, n_heads = 8, dropout = 0.1, name='Enc_block'):
         assert d_model == d_feature*n_heads
         self.dropout = dropout
-        self.multihead = MultiHeadAttnetion(d_model, n_heads, dropout=dropout, name = name)
+        self.multihead = MultiHeadAttention(d_model, n_heads, dropout=dropout, name = name)
         self.pos_wise_ff = Position_Wise_ff(d_model, d_ff, name=name)
 
 
     def __call__(self, enc_input, mask = None):
         log_size(self.level, enc_input, 'Encoder, input')
+        #multi head self attention
         attn = self.multihead(enc_input, enc_input, enc_input, mask=mask)
         log_size(self.level, attn, 'Encoder, attention output')
 
+        #Layer norm and residual
         enc_state = enc_input + tf.nn.dropout(tf.contrib.layers.layer_norm(attn), keep_prob=1-self.dropout)
-        #enc_state = attn
 
+        #position-wise feed forward
         pos = self.pos_wise_ff(enc_state)
+        #Layer norm and residual
         enc_state = enc_state + tf.nn.dropout(tf.contrib.layers.layer_norm(pos), keep_prob=1-self.dropout)
-        #enc_state=pos
         log_size(self.level, enc_state, 'Encoder, output')
 
         return enc_state
@@ -167,26 +170,26 @@ class DecoderBlock():
     def __init__(self, d_model, d_feature, d_ff=2048, n_heads = 8, dropout = 0.1, name='Dec_block'):
         assert d_model == d_feature*n_heads
         self.dropout = dropout
-        self.masked_attn = MultiHeadAttnetion(d_model, n_heads, dropout=dropout, name=name+'_masked')
-        self.attn = MultiHeadAttnetion(d_model, n_heads, dropout=dropout, name = name)
+        self.masked_attn = MultiHeadAttention(d_model, n_heads, dropout=dropout, name=name+'_masked')
+        self.attn = MultiHeadAttention(d_model, n_heads, dropout=dropout, name = name)
         self.pos_wise_ff = Position_Wise_ff(d_model, d_ff, name=name)
 
 
     def __call__(self, x, enc_out, src_mask=None, tgt_mask=None):
-        #apply decoder self attention
+        #decoder multi head masked self attention
         att = self.masked_attn(x, x, x, mask=tgt_mask)
+        # Layer norm and residual
         x = x + tf.nn.dropout(tf.contrib.layers.layer_norm(att), keep_prob=1 - self.dropout)
-        #x = att
 
-        #apply encoder-decoder attention
+        #encoder-decoder attention
         att = self.attn(queries=x, keys=enc_out, values=enc_out, mask = src_mask)
+        # Layer norm and residual
         x = x + tf.nn.dropout(tf.contrib.layers.layer_norm(att), keep_prob=1 - self.dropout)
-        #x=att
 
         #position wise feed forward
         pos = self.pos_wise_ff(x)
+        # Layer norm and residual
         x = x + tf.nn.dropout(tf.contrib.layers.layer_norm(pos), keep_prob=1 - self.dropout)
-        #x = pos
         return x
 
 
@@ -205,6 +208,7 @@ class TransformerDecoder():
 
 
 class Generator():
+    '''class for mapping the output of decoder to the vocabulary'''
     def __init__(self, d_output_vocab):
         self.proj = Dense(d_output_vocab, kernel_initializer=initializers.he_normal(), name='generator')
 
@@ -232,25 +236,24 @@ class PositionalEmbedding():
 
 class WordEmbeddings():
     def __init__(self, d_model, d_vocab, max_len = 30, name='embs'):
-        #self.embeddings = tf.Variable(initial_value=np.random.randn(d_vocab, d_model), dtype=tf.float32)
         self.embeddings = tf.get_variable(shape=(d_vocab, d_model), dtype=tf.float32, initializer=initializers.he_normal(), name=name)
         self.pos_embeddings = PositionalEmbedding(max_len, d_model)
 
     def __call__(self, indices):
-        seq_len = int(indices.shape[1]) if len(indices.shape)>1 else int(indices.shape[1])
+        seq_len = int(indices.shape[1]) if len(indices.shape)>1 else int(indices.shape[0])
         return tf.nn.embedding_lookup(self.embeddings, indices) + self.pos_embeddings(seq_len)
 
 
 
 
+
 class TransformerModel():
+    '''putting it all together'''
     def __init__(self, d_inp_vocab, d_out_vocab, d_model=100, n_blocks=3, n_heads=5, d_ff=500, dropout = 0.1):
         self.enc = TransformerEncoder(n_blocks=n_blocks, d_model=d_model, n_heads=n_heads, d_ff=d_ff, dropout=dropout)
         self.dec = TransformerDecoder(n_blocks=n_blocks, d_model=d_model, n_heads=n_heads, d_ff=d_ff, dropout=dropout)
         self.gen = Generator(d_out_vocab)
 
-        # self.inp_embs = WordEmbeddings(d_vocab=d_inp_vocab, d_model=d_model)
-        # self.out_embs = WordEmbeddings(d_vocab=d_out_vocab, d_model=d_model)
 
     def __call__(self, enc_inp, dec_inp, src_mask=None, tgt_mask=None):
         self.enc_out = self.enc(enc_inp, mask=src_mask)

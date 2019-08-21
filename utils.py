@@ -1,7 +1,6 @@
 import numpy as np
 import tensorflow as tf
 import logging
-import inspect
 from enum import IntEnum
 
 
@@ -39,11 +38,6 @@ def gen_batch(data, batch_size=10):
         yield inp_seq[next_batch_ixs], out_seq[next_batch_ixs]
 
 
-
-
-
-
-
 # Control how much debugging output we want
 class TensorLoggingLevels(IntEnum):
     attention = 1
@@ -51,9 +45,3 @@ class TensorLoggingLevels(IntEnum):
     multihead_attention_block = 3
     enc_dec_block = 4
     enc_dec = 5
-
-class Dim(IntEnum):
-    batch = 0
-    seq = 1
-    head = 2
-    feature = 3
