@@ -91,20 +91,20 @@ class MultiHeadAttention():
 
 
     def __call__(self, queries, keys, values, mask = None):
-        n_batch = queries.get_shape().as_list()[0] #either n_batch or n_seq should be known for further reshapings of the tensors
+        n_seq = queries.get_shape().as_list()[1] #n_seq should be known for further reshapings of the tensors, will be explicitly specified in the input placeholder
 
-        Q = self.transform_vec(queries, self.q_transform, n_batch)
-        K = self.transform_vec(keys, self.k_transform, n_batch)
-        V = self.transform_vec(values, self.v_transform, n_batch)
+        Q = self.transform_vec(queries, self.q_transform, n_seq)
+        K = self.transform_vec(keys, self.k_transform, n_seq)
+        V = self.transform_vec(values, self.v_transform, n_seq)
 
         attn_head_output, self.attn_weights = self.attn(Q, K, V, mask=mask)
-        attn_head_output = tf.reshape(attn_head_output, shape=(n_batch, -1, self.n_heads*self.d_k))
+        attn_head_output = tf.reshape(attn_head_output, shape=(-1, n_seq, self.n_heads*self.d_k))
         log_size(self.level, attn_head_output, 'Multihead Attention, output')
         return attn_head_output
 
 
-    def transform_vec(self, vec, dense_transform, n_batch):
-        linear_proj =  tf.reshape(dense_transform(vec), shape=[n_batch, -1, self.n_heads, self.d_k]) #transforming (batch x seq x d_model) to (batch x seq x heads x d_k)
+    def transform_vec(self, vec, dense_transform, n_seq):
+        linear_proj =  tf.reshape(dense_transform(vec), shape=[-1, n_seq, self.n_heads, self.d_k]) #transforming (batch x seq x d_model) to (batch x seq x heads x d_k)
         return tf.transpose(linear_proj, perm=[0,2,1,3]) #transposing to shape (batch x heads x seq x feat), the shape expected by ScaledDotProductAttention
 
 
@@ -240,7 +240,7 @@ class WordEmbeddings():
         self.pos_embeddings = PositionalEmbedding(max_len, d_model)
 
     def __call__(self, indices):
-        seq_len = int(indices.shape[1]) if len(indices.shape)>1 else int(indices.shape[0])
+        seq_len = int(indices.shape[1]) if len(indices.shape)>1 else int(indices.shape[0]) #indices is either n_batch x n_seq, or just n_seq
         return tf.nn.embedding_lookup(self.embeddings, indices) + self.pos_embeddings(seq_len)
 
 
@@ -260,29 +260,5 @@ class TransformerModel():
         self.dec_out = self.dec(dec_inp, self.enc_out, src_mask=src_mask, tgt_mask=tgt_mask)
         self.output = self.gen(self.dec_out)
         return self.output
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
